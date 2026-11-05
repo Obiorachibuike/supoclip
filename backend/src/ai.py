@@ -24,6 +24,18 @@ from pydantic_ai.providers.ollama import OllamaProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
+from .agnes_ai import build_agnes_model
+from .ai_providers import (
+    AICapacityError,
+    AIProviderError,
+    AIProviderQuotaExhausted,
+    AIProviderUnavailable,
+    PaidProviderNotAuthorized,
+    get_provider_policy,
+    is_paid_reasoning_provider,
+    provider_of_model,
+)
+from .ai_usage import record_ai_error, record_ai_usage
 from .config import Config, get_config
 from .clip_duration import clip_duration
 from .runtime_settings import apply_settings_to_process_env
@@ -438,7 +450,15 @@ def build_transcript_system_prompt(clip_length: str = "auto") -> str:
 _transcript_agent: Optional[Agent[None, TranscriptAnalysis]] = None
 _transcript_agent_signature: Optional[tuple[str | None, ...]] = None
 
-SUPPORTED_LLM_PROVIDERS = {"google", "google-gla", "openai", "openrouter", "anthropic", "ollama"}
+SUPPORTED_LLM_PROVIDERS = {
+    "agnes",
+    "google",
+    "google-gla",
+    "openai",
+    "openrouter",
+    "anthropic",
+    "ollama",
+}
 
 
 def _split_llm_name(model_name: str) -> tuple[str, str | None]:
@@ -447,6 +467,21 @@ def _split_llm_name(model_name: str) -> tuple[str, str | None]:
 
     provider, provider_model_name = model_name.split(":", 1)
     return provider.strip().lower(), provider_model_name.strip() or None
+
+
+def _assert_paid_provider_authorized(model_name: str, runtime_config: Config) -> None:
+    """Refuse to spend paid credits unless the operator opted in.
+
+    Free and local modes carry no authorization of their own, so a paid model
+    that slipped into ``LLM`` (for example after adding a premium key) is
+    rejected here instead of silently billed.
+    """
+    provider = provider_of_model(model_name)
+    if not is_paid_reasoning_provider(model_name):
+        return
+    get_provider_policy(runtime_config).assert_paid_authorization(
+        provider, purpose="AI clip analysis"
+    )
 
 
 def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optional[str]:
@@ -463,6 +498,14 @@ def _get_missing_llm_key_error(model_name: str, runtime_config: Config) -> Optio
         return (
             "Selected LLM is missing a model name. "
             "Use the format provider:model, for example ollama:gpt-oss:20b."
+        )
+
+    if provider == "agnes" and not runtime_config.agnes_api_key:
+        return (
+            "Selected LLM provider is Agnes AI (the free tier default), but "
+            "AGNES_API_KEY is not set. Create a free key at platform.agnes-ai.com and "
+            "set AGNES_API_KEY, configure a local model with OLLAMA_MODEL, or set "
+            "AI_PROVIDER_MODE=premium with a provider key."
         )
 
     if provider in {"google", "google-gla"} and not runtime_config.google_api_key:
@@ -509,6 +552,11 @@ def _build_transcript_model(
 ) -> Model | str:
     model_name = model_name or runtime_config.llm
     provider, provider_model_name = _split_llm_name(model_name)
+    _assert_paid_provider_authorized(model_name, runtime_config)
+    if provider == "agnes":
+        # Agnes is OpenAI-compatible; one shared factory keeps base URL,
+        # profile and credentials consistent for every agent.
+        return build_agnes_model(runtime_config, provider_model_name)
     if provider == "anthropic" and _uses_native_output(model_name):
         # The installed SDK predates Sonnet 5.5. This model requires native
         # structured output rather than forced tool calls.
@@ -559,14 +607,22 @@ def _build_transcript_model(
     )
 
 
-def get_transcript_agent(clip_length: str = "auto") -> Agent[None, TranscriptAnalysis]:
-    """Get or create the transcript analysis agent (lazy initialization)."""
+def get_transcript_agent(
+    clip_length: str = "auto", model_name: str | None = None
+) -> Agent[None, TranscriptAnalysis]:
+    """Get or create the transcript analysis agent (lazy initialization).
+
+    ``model_name`` overrides the configured model, which is how the free local
+    fallback re-runs the analysis when Agnes runs out of quota.
+    """
     global _transcript_agent, _transcript_agent_signature
     runtime_config = get_config()
-    provider, _ = _split_llm_name(runtime_config.llm)
+    selected_model = model_name or runtime_config.llm
+    provider, _ = _split_llm_name(selected_model)
     signature = (
         clip_length,
-        runtime_config.llm,
+        selected_model,
+        runtime_config.agnes_api_key,
         runtime_config.openai_api_key,
         runtime_config.openrouter_api_key,
         runtime_config.openrouter_fallback_model,
@@ -575,15 +631,18 @@ def get_transcript_agent(clip_length: str = "auto") -> Agent[None, TranscriptAna
         runtime_config.ollama_base_url,
         runtime_config.ollama_api_key,
     )
-    if _transcript_agent is None or _transcript_agent_signature != signature:
+    if (
+        _transcript_agent is None
+        or _transcript_agent_signature != signature
+    ):
         apply_settings_to_process_env(runtime_config.as_runtime_settings())
-        config_error = _get_missing_llm_key_error(runtime_config.llm, runtime_config)
+        config_error = _get_missing_llm_key_error(selected_model, runtime_config)
         if config_error:
             raise RuntimeError(config_error)
 
         _transcript_agent = Agent[None, TranscriptAnalysis](
-            model=_build_transcript_model(runtime_config),
-            output_type=NativeOutput(TranscriptAnalysis, strict=True) if _uses_native_output(runtime_config.llm) else TranscriptAnalysis,
+            model=_build_transcript_model(runtime_config, selected_model),
+            output_type=NativeOutput(TranscriptAnalysis, strict=True) if _uses_native_output(selected_model) else TranscriptAnalysis,
             system_prompt=build_transcript_system_prompt(clip_length),
             # Some local Ollama/OpenAI-compatible endpoints can return formatted
             # prose before settling on schema-valid JSON. Keep retries limited
@@ -639,14 +698,17 @@ _rerank_agent: Optional[Agent[None, CandidateRanking]] = None
 _rerank_agent_signature: Optional[tuple[str | None, ...]] = None
 
 
-def get_rerank_agent() -> Agent[None, CandidateRanking]:
+def get_rerank_agent(model_name: str | None = None) -> Agent[None, CandidateRanking]:
     """Get or create the candidate rerank agent (lazy initialization)."""
     global _rerank_agent, _rerank_agent_signature
     runtime_config = get_config()
-    model_name = getattr(runtime_config, "rerank_llm", None) or runtime_config.llm
+    model_name = (
+        model_name or getattr(runtime_config, "rerank_llm", None) or runtime_config.llm
+    )
     provider, _ = _split_llm_name(model_name)
     signature = (
         model_name,
+        runtime_config.agnes_api_key,
         runtime_config.openai_api_key,
         runtime_config.openrouter_api_key,
         runtime_config.openrouter_fallback_model,
@@ -722,6 +784,7 @@ def get_broll_agent() -> Agent[None, BRollPlan]:
     model_name = runtime_config.llm
     signature = (
         model_name,
+        runtime_config.agnes_api_key,
         runtime_config.openai_api_key,
         runtime_config.openrouter_api_key,
         runtime_config.openrouter_fallback_model,
@@ -1111,6 +1174,78 @@ def _is_transient_model_error(error: Exception) -> bool:
     return False
 
 
+def _provider_error_status(error: Exception) -> tuple[int | None, str | None]:
+    """Return (status_code, provider_hint) for an SDK-wrapped HTTP failure."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ModelHTTPError):
+            model_name = getattr(getattr(current, "model_name", None), "", None)
+            provider = (
+                provider_of_model(model_name) if isinstance(model_name, str) else None
+            )
+            return current.status_code, provider
+        current = current.__cause__
+    return None, None
+
+
+def _translate_provider_error(error: Exception, runtime_config: Config) -> Exception:
+    """Turn a non-retryable provider failure into an actionable SupoClip error.
+
+    402 (payment required / quota exhausted) can never succeed by retrying, so
+    it short-circuits the retry loop.  Everything else keeps the existing retry
+    contract: 408/429/5xx are retried, and 400/401/403 surface unchanged.
+    """
+    status_code, provider_hint = _provider_error_status(error)
+    if status_code is None:
+        return error
+    if status_code == 402:
+        provider = provider_hint or provider_of_model(runtime_config.llm)
+        return AIProviderQuotaExhausted(
+            f"The {provider} provider is out of quota or balance (HTTP 402). "
+            "SupoClip did not switch to a paid provider automatically.",
+            provider_id=provider,
+            status_code=status_code,
+        )
+    return error
+
+
+def _record_agent_usage(result: Any, runtime_config: Config) -> None:
+    """Record the tokens the provider reported for one agent run."""
+    try:
+        usage = result.usage()
+    except Exception:  # pragma: no cover - SDK shape changes
+        return
+    configured_model = getattr(runtime_config, "llm", "") or ""
+    # The response reports the bare model id, so the provider comes from the
+    # configured ``provider:model`` string instead.
+    provider = provider_of_model(configured_model) if configured_model else "unknown"
+    model_name = (
+        getattr(getattr(result, "response", None), "model_name", None)
+        or configured_model
+        or "unknown"
+    )
+    prompt_tokens = getattr(usage, "input_tokens", None) or getattr(usage, "request_tokens", 0)
+    completion_tokens = getattr(usage, "output_tokens", None) or getattr(
+        usage, "response_tokens", 0
+    )
+    total_tokens = getattr(usage, "total_tokens", None) or (
+        int(prompt_tokens or 0) + int(completion_tokens or 0)
+    )
+    record_ai_usage(
+        provider,
+        str(model_name),
+        {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        },
+        tier="paid" if is_paid_reasoning_provider(configured_model) else "free",
+        source="reasoning",
+    )
+
+
 async def _run_transcript_analysis(
     agent: Agent,
     prompt: str,
@@ -1124,6 +1259,7 @@ async def _run_transcript_analysis(
     """
     if timeout_seconds is None:
         timeout_seconds = TRANSCRIPT_ANALYSIS_TIMEOUT_SECONDS
+    runtime_config = get_config()
     try:
         async with asyncio.timeout(timeout_seconds):
             for attempt in range(1, TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS + 1):
@@ -1131,8 +1267,13 @@ async def _run_transcript_analysis(
                     result = await agent.run(prompt)
                     if hasattr(result, "response"):
                         logger.info("AI analysis completed using model %s", result.response.model_name)
+                    _record_agent_usage(result, runtime_config)
                     return result
                 except Exception as error:
+                    translated = _translate_provider_error(error, runtime_config)
+                    if translated is not error:
+                        # Exhausted quota or bad credentials: no retry helps.
+                        raise translated from None
                     if not _is_transient_model_error(error):
                         raise
                     if attempt == TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS:
@@ -1142,9 +1283,23 @@ async def _run_transcript_analysis(
                             type(error).__name__,
                             getattr(error, "status_code", None),
                         )
-                        raise RuntimeError(
+                        if getattr(error, "status_code", None) == 429:
+                            # A rate limit that survived every retry is a quota
+                            # problem, not a transient blip: stop spending time.
+                            raise AIProviderQuotaExhausted(
+                                "The AI provider is rate limiting this deployment "
+                                "(HTTP 429) after all retries. No paid provider was used.",
+                                provider_id=provider_of_model(get_config().llm),
+                                status_code=429,
+                            ) from None
+                        # AIProviderUnavailable is a RuntimeError, so callers that
+                        # only catch RuntimeError keep their old behaviour, while
+                        # the analysis pipeline can still try a free fallback.
+                        raise AIProviderUnavailable(
                             "The AI analysis service is temporarily unavailable after "
-                            "several attempts. Please try again shortly."
+                            "several attempts. Please try again shortly.",
+                            provider_id=provider_of_model(get_config().llm),
+                            status_code=getattr(error, "status_code", None),
                         ) from None
 
                     delay = 5 * 2 ** (attempt - 1) + random.uniform(0, 1)
@@ -1381,17 +1536,23 @@ def apply_candidate_ranking(
 
 
 async def rerank_candidates(
-    candidates: List[TranscriptSegment], performance_context: str | None = None
+    candidates: List[TranscriptSegment],
+    performance_context: str | None = None,
+    model_name: str | None = None,
 ) -> List[TranscriptSegment]:
     """Compare all candidates in one call; keep first-pass order if that fails.
 
     ``performance_context`` lets the creator's audience history shape the
-    final selection too, not just each window's first pass.
+    final selection too, not just each window's first pass. ``model_name``
+    keeps the rerank on the same model as the window pass, which matters when a
+    free fallback replaces the default provider.
     """
     if len(candidates) < 2:
         return candidates
     try:
-        agent = get_rerank_agent()
+        # Keep the zero-argument call shape for the default model so existing
+        # callers (and tests) that patch the factory keep working.
+        agent = get_rerank_agent() if model_name is None else get_rerank_agent(model_name)
         result = await _run_transcript_analysis(
             agent,
             build_candidate_rerank_prompt(candidates, performance_context),
@@ -1642,6 +1803,158 @@ def _merge_key_topics(analyses: List[TranscriptAnalysis], limit: int = 12) -> Li
     return topics[:limit]
 
 
+async def _analyse_transcript(
+    agent: Agent,
+    transcript: str,
+    *,
+    clip_signals: str | None,
+    performance_context: str | None,
+    clip_length: str,
+    include_reserve: bool,
+    model_name: str | None = None,
+) -> TranscriptAnalysis:
+    """Run the windowed analysis pipeline with one agent."""
+    transcript_lines = _parse_transcript_lines(transcript)
+    transcript_spans = _parse_transcript_spans(transcript)
+    windows = split_transcript_into_windows(transcript)
+
+    if len(windows) == 1:
+        result = await _run_transcript_analysis(
+            agent,
+            build_transcript_analysis_prompt(
+                transcript=transcript,
+                clip_signals=clip_signals,
+                performance_context=performance_context,
+                clip_length=clip_length,
+            ),
+        )
+        analyses = [result.output]
+    else:
+        logger.info("Analysing transcript in %d overlapping windows", len(windows))
+        analyses = await _analyze_transcript_windows(
+            agent, windows, clip_signals, performance_context, clip_length
+        )
+
+    candidates: List[TranscriptSegment] = []
+    for analysis in analyses:
+        logger.info(
+            f"AI analysis found {len(analysis.most_relevant_segments)} segments"
+        )
+        candidates.extend(
+            _validate_segments(
+                analysis.most_relevant_segments, transcript_lines, transcript_spans, clip_length
+            )
+        )
+
+    # Best-first by virality (primary) then relevance (secondary), without
+    # near-duplicates; then compare across windows in one rerank call.
+    candidates = dedupe_overlapping_segments(candidates)
+    if len(windows) > 1:
+        # Rerank with the model that produced the candidates. None means "the
+        # configured default", which keeps the zero-argument factory contract.
+        rerank_model = model_name if model_name and model_name != get_config().llm else None
+        if rerank_model is None:
+            candidates = await rerank_candidates(candidates, performance_context)
+        else:
+            candidates = await rerank_candidates(
+                candidates, performance_context, rerank_model
+            )
+
+    source_seconds = max(
+        (line["end_seconds"] for line in transcript_lines), default=0
+    )
+    limit = max_final_clips_for_duration(source_seconds, get_config().max_clips)
+    # Retain already-ranked alternatives until picture suitability checks
+    # finish. No extra model call is needed when a slate is rejected.
+    validated_segments = candidates[: min(24, limit * 2) if include_reserve else limit]
+
+    final_analysis = TranscriptAnalysis(
+        most_relevant_segments=validated_segments,
+        summary=" ".join(
+            analysis.summary.strip() for analysis in analyses if analysis.summary
+        ),
+        key_topics=_merge_key_topics(analyses),
+    )
+
+    logger.info(f"Selected {len(validated_segments)} segments for processing")
+    if validated_segments:
+        top = validated_segments[0]
+        logger.info(
+            f"Top segment - relevance: {top.relevance_score:.2f}, virality: {top.virality.total_score if top.virality else 'N/A'}"
+        )
+
+    return final_analysis
+
+
+async def _analyse_with_free_fallback(
+    transcript: str,
+    *,
+    clip_signals: str | None,
+    performance_context: str | None,
+    clip_length: str,
+    include_reserve: bool,
+) -> TranscriptAnalysis:
+    """Analyse with the configured provider, then with an eligible free one.
+
+    When the primary provider runs out of quota or is unavailable, a configured
+    local Ollama model takes over. Nothing paid is ever attempted automatically:
+    if no free alternative exists the operation stops with an explanation.
+    """
+    runtime_config = get_config()
+    primary_model = getattr(runtime_config, "llm", None) or "agnes:agnes-2.5-flash"
+    agent = get_transcript_agent(clip_length)
+    try:
+        return await _analyse_transcript(
+            agent,
+            transcript,
+            clip_signals=clip_signals,
+            performance_context=performance_context,
+            clip_length=clip_length,
+            include_reserve=include_reserve,
+            model_name=primary_model,
+        )
+    except (AIProviderQuotaExhausted, AIProviderUnavailable) as primary_error:
+        policy = get_provider_policy(runtime_config)
+        record_ai_error(
+            provider_of_model(primary_model),
+            primary_model,
+            tier="paid" if is_paid_reasoning_provider(primary_model) else "free",
+        )
+        fallback_model = policy.free_fallback_model()
+        if not fallback_model:
+            logger.warning(
+                "AI provider %s is out of capacity and no free fallback is configured",
+                primary_model,
+            )
+            raise policy.capacity_error(primary_error) from primary_error
+
+        logger.warning(
+            "AI provider %s is out of capacity (%s); retrying with the free local "
+            "model %s",
+            primary_model,
+            type(primary_error).__name__,
+            fallback_model,
+        )
+        try:
+            fallback_agent = get_transcript_agent(clip_length, model_name=fallback_model)
+            return await _analyse_transcript(
+                fallback_agent,
+                transcript,
+                clip_signals=clip_signals,
+                performance_context=performance_context,
+                clip_length=clip_length,
+                include_reserve=include_reserve,
+                model_name=fallback_model,
+            )
+        except Exception as fallback_error:
+            logger.error(
+                "Free fallback model %s also failed (%s)",
+                fallback_model,
+                type(fallback_error).__name__,
+            )
+            raise policy.capacity_error(primary_error) from primary_error
+
+
 async def get_most_relevant_parts_by_transcript(
     transcript: str,
     clip_signals: str | None = None,
@@ -1660,70 +1973,16 @@ async def get_most_relevant_parts_by_transcript(
     )
 
     try:
-        agent = get_transcript_agent(clip_length)
-        transcript_lines = _parse_transcript_lines(transcript)
-        transcript_spans = _parse_transcript_spans(transcript)
-        windows = split_transcript_into_windows(transcript)
-
-        if len(windows) == 1:
-            result = await _run_transcript_analysis(
-                agent,
-                build_transcript_analysis_prompt(
-                    transcript=transcript,
-                    clip_signals=clip_signals,
-                    performance_context=performance_context,
-                    clip_length=clip_length,
-                )
-            )
-            analyses = [result.output]
-        else:
-            logger.info("Analysing transcript in %d overlapping windows", len(windows))
-            analyses = await _analyze_transcript_windows(
-                agent, windows, clip_signals, performance_context, clip_length
-            )
-
-        candidates: List[TranscriptSegment] = []
-        for analysis in analyses:
-            logger.info(
-                f"AI analysis found {len(analysis.most_relevant_segments)} segments"
-            )
-            candidates.extend(
-                _validate_segments(
-                    analysis.most_relevant_segments, transcript_lines, transcript_spans, clip_length
-                )
-            )
-
-        # Best-first by virality (primary) then relevance (secondary), without
-        # near-duplicates; then compare across windows in one rerank call.
-        candidates = dedupe_overlapping_segments(candidates)
-        if len(windows) > 1:
-            candidates = await rerank_candidates(candidates, performance_context)
-
-        source_seconds = max(
-            (line["end_seconds"] for line in transcript_lines), default=0
+        return await _analyse_with_free_fallback(
+            transcript,
+            clip_signals=clip_signals,
+            performance_context=performance_context,
+            clip_length=clip_length,
+            include_reserve=include_reserve,
         )
-        limit = max_final_clips_for_duration(source_seconds, get_config().max_clips)
-        # Retain already-ranked alternatives until picture suitability checks
-        # finish. No extra model call is needed when a slate is rejected.
-        validated_segments = candidates[: min(24, limit * 2) if include_reserve else limit]
-
-        final_analysis = TranscriptAnalysis(
-            most_relevant_segments=validated_segments,
-            summary=" ".join(
-                analysis.summary.strip() for analysis in analyses if analysis.summary
-            ),
-            key_topics=_merge_key_topics(analyses),
-        )
-
-        logger.info(f"Selected {len(validated_segments)} segments for processing")
-        if validated_segments:
-            top = validated_segments[0]
-            logger.info(
-                f"Top segment - relevance: {top.relevance_score:.2f}, virality: {top.virality.total_score if top.virality else 'N/A'}"
-            )
-
-        return final_analysis
-
+    except (AIProviderError, PaidProviderNotAuthorized):
+        # Actionable provider problems reach the task's error message verbatim.
+        raise
     except Exception as e:
         logger.error(f"Error in transcript analysis: {e}")
         raise RuntimeError(f"Transcript analysis failed: {str(e)}") from e

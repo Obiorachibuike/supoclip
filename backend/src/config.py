@@ -1,10 +1,22 @@
 from dotenv import load_dotenv
+import importlib.util
+import logging
 import math
 import os
 
+from .ai_providers import (
+    PAID_REASONING_PROVIDERS,
+    default_reasoning_model_for_mode,
+    default_transcription_provider_for_mode,
+    normalize_ai_mode,
+    normalize_transcription_provider,
+    provider_of_model,
+)
 from .runtime_settings import get_cached_setting, setting_prefers_admin
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 _config_override = None
 LOCAL_OLLAMA_BASE_URL = "http://localhost:11434/v1"
@@ -21,17 +33,68 @@ class Config:
         self.youtube_data_api_key = self._get_runtime_setting("YOUTUBE_DATA_API_KEY")
         self.ollama_base_url = self._get_runtime_setting("OLLAMA_BASE_URL")
         self.ollama_api_key = self._get_runtime_setting("OLLAMA_API_KEY")
+        # Optional model id for local Ollama. A free-tier deployment may use it
+        # both as its reasoning model and as the free fallback when Agnes runs
+        # out of quota.
+        self.ollama_model = self._get_optional_env("OLLAMA_MODEL")
+
+        # Agnes AI: the default free reasoning provider. Base URL, model id and
+        # the OpenAI-compatible endpoints come from wiki.agnes-ai.com.
+        self.agnes_api_key = self._get_runtime_setting("AGNES_API_KEY")
+        self.agnes_base_url = (
+            self._get_optional_env("AGNES_BASE_URL") or "https://apihub.agnes-ai.com/v1"
+        ).rstrip("/")
+        self.agnes_model = self._get_optional_env("AGNES_MODEL") or "agnes-2.5-flash"
+        self.agnes_timeout_seconds = self._get_positive_float_env(
+            "AGNES_TIMEOUT_SECONDS", 600.0, maximum=1800.0
+        )
+        self.agnes_max_output_tokens = self._get_int_env("AGNES_MAX_OUTPUT_TOKENS", 8192)
+
+        # Processing mode decides which providers are eligible. Unset keeps the
+        # historical behaviour for deployments that already configured a
+        # provider, and defaults brand-new installs to the free tier.
+        self.ai_provider_mode = self._resolve_ai_provider_mode()
+        # Paid providers are never used unless the operator opted in. Choosing
+        # premium/custom mode is itself an opt-in.
+        self.allow_paid_ai_providers = self._get_bool_env("AI_ALLOW_PAID_PROVIDERS", False)
+        self.ai_free_fallback_enabled = self._get_bool_env("AI_FREE_FALLBACK_ENABLED", True)
 
         self.whisper_model = os.getenv("WHISPER_MODEL") or os.getenv("WHISPER_MODEL_SIZE", "base")
-        self.transcription_provider = self._normalize_transcription_provider(
-            os.getenv("TRANSCRIPTION_PROVIDER", "assemblyai")
+        # Faster-Whisper is the free local engine. WHISPER_MODEL_SIZE is honoured
+        # so existing deployments keep their chosen model size.
+        self.faster_whisper_model = (
+            self._get_optional_env("FASTER_WHISPER_MODEL")
+            or self._get_optional_env("WHISPER_MODEL_SIZE")
+            or "medium"
         )
-        # Empty means auto-detect the spoken language; otherwise an AssemblyAI
-        # language code such as "es" or "en_us" forces it.
+        self.faster_whisper_device = self._normalize_whisper_device(
+            os.getenv("FASTER_WHISPER_DEVICE")
+        )
+        self.faster_whisper_compute_type = (
+            self._get_optional_env("FASTER_WHISPER_COMPUTE_TYPE") or "auto"
+        ).lower()
+        self.faster_whisper_download_root = self._get_optional_env(
+            "FASTER_WHISPER_DOWNLOAD_ROOT"
+        )
+        self.faster_whisper_beam_size = max(
+            1, min(10, self._get_int_env("FASTER_WHISPER_BEAM_SIZE", 5))
+        )
+        self.faster_whisper_vad_filter = self._get_bool_env(
+            "FASTER_WHISPER_VAD_FILTER", True
+        )
+        self.faster_whisper_cpu_threads = max(
+            0, self._get_int_env("FASTER_WHISPER_CPU_THREADS", 0)
+        )
+        self.transcription_cache_enabled = self._get_bool_env(
+            "TRANSCRIPTION_CACHE_ENABLED", True
+        )
+        self.transcription_provider = self._resolve_transcription_provider()
+        # Empty means auto-detect the spoken language; otherwise a language code
+        # such as "es" or "en_us" forces it.
         self.transcription_language = self._normalize_transcription_language(
             os.getenv("TRANSCRIPTION_LANGUAGE")
         )
-        self.llm = self._get_runtime_setting("LLM") or self._infer_default_llm()
+        self.llm = self._resolve_reasoning_model()
         # Optional separate model for the cross-window candidate rerank pass.
         self.rerank_llm = self._get_optional_env("RERANK_LLM") or self.llm
         self.assembly_ai_api_key = self._get_runtime_setting("ASSEMBLY_AI_API_KEY")
@@ -317,6 +380,7 @@ class Config:
     def as_runtime_settings(self) -> dict[str, str | None]:
         return {
             "ASSEMBLY_AI_API_KEY": self.assembly_ai_api_key,
+            "AGNES_API_KEY": self.agnes_api_key,
             "LLM": self.llm,
             "OPENAI_API_KEY": self.openai_api_key,
             "OPENROUTER_API_KEY": self.openrouter_api_key,
@@ -388,10 +452,135 @@ class Config:
 
     @staticmethod
     def _normalize_transcription_provider(value: str | None) -> str:
-        normalized = (value or "").strip().lower().replace("-", "_")
-        if normalized in ("whisper", "youtube_captions"):
+        """Canonical provider id, or an empty string when unset/unknown."""
+        return normalize_transcription_provider(value) or ""
+
+    @staticmethod
+    def _normalize_whisper_device(value: str | None) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized in {"cpu", "cuda", "auto"}:
             return normalized
-        return "assemblyai"
+        if normalized:
+            logger.warning(
+                "Unrecognised FASTER_WHISPER_DEVICE '%s'; using auto detection", value
+            )
+        return "auto"
+
+    def _legacy_provider_configuration_present(self) -> bool:
+        """True when a deployment already configured providers explicitly.
+
+        Such installs keep their selected provider instead of being moved onto
+        the free tier by an upgrade, which keeps existing deployments working.
+        Empty strings (the shape docker-compose passes for unset variables) do
+        not count as configuration.
+        """
+        for name in (
+            "LLM",
+            "ASSEMBLY_AI_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENROUTER_API_KEY",
+            "OLLAMA_BASE_URL",
+            "TRANSCRIPTION_PROVIDER",
+        ):
+            if self._get_optional_env(name):
+                return True
+        return False
+
+    def _resolve_ai_provider_mode(self) -> str:
+        explicit = normalize_ai_mode(self._get_optional_env("AI_PROVIDER_MODE"))
+        if explicit:
+            return explicit
+        if self._legacy_provider_configuration_present():
+            return "custom"
+        return "free"
+
+    def _resolve_transcription_provider(self) -> str:
+        explicit = normalize_transcription_provider(
+            self._get_optional_env("TRANSCRIPTION_PROVIDER")
+        )
+        default = default_transcription_provider_for_mode(self.ai_provider_mode)
+        if explicit:
+            # Free and local modes never transcribe with a paid engine unless the
+            # deployment explicitly authorized paid providers.
+            if (
+                explicit == "assemblyai"
+                and self.ai_provider_mode in {"free", "local"}
+                and not self.allow_paid_ai_providers
+                and explicit != default
+            ):
+                logger.warning(
+                    "TRANSCRIPTION_PROVIDER=assemblyai is a paid engine but "
+                    "AI_PROVIDER_MODE=%s does not authorize paid providers; using %s. "
+                    "Set AI_PROVIDER_MODE=premium (with ASSEMBLY_AI_API_KEY) or "
+                    "AI_ALLOW_PAID_PROVIDERS=true to enable it.",
+                    self.ai_provider_mode,
+                    default,
+                )
+                return default
+            return explicit
+        return default
+
+    def _resolve_reasoning_model(self) -> str:
+        """Pick the reasoning model for the active mode.
+
+        Free and local modes never select a paid model: an explicit paid ``LLM``
+        is ignored (with a warning) instead of quietly spending credits.
+        """
+        explicit = self._get_runtime_setting("LLM")
+        mode = self.ai_provider_mode
+        fallback_default = default_reasoning_model_for_mode(mode, self)
+
+        if mode in {"free", "local"}:
+            if explicit:
+                explicit_provider = provider_of_model(explicit)
+                if (
+                    explicit_provider not in PAID_REASONING_PROVIDERS
+                    or self.allow_paid_ai_providers
+                ):
+                    # Agnes selected without a key still falls back to a
+                    # configured local model so the free tier keeps working.
+                    if (
+                        explicit_provider == "agnes"
+                        and not self.agnes_api_key
+                        and fallback_default
+                        and provider_of_model(fallback_default) != "agnes"
+                    ):
+                        logger.warning(
+                            "AGNES_API_KEY is not set; using the configured local model %s",
+                            fallback_default,
+                        )
+                        return fallback_default
+                    return explicit
+                logger.warning(
+                    "Ignoring paid LLM '%s' because AI_PROVIDER_MODE=%s; set "
+                    "AI_PROVIDER_MODE=premium (and a provider key) to use it",
+                    explicit,
+                    mode,
+                )
+            if fallback_default:
+                return fallback_default
+            return self._infer_default_llm()
+
+        return explicit or fallback_default or self._infer_default_llm()
+
+    def ai_provider_label(self) -> str:
+        """Label of the provider behind the resolved ``LLM`` setting."""
+        from .ai_providers import provider_label
+
+        return provider_label(self.llm)
+
+    def transcription_local_available(self) -> bool:
+        """Whether the local transcription engine can be imported here."""
+        module = (
+            "faster_whisper"
+            if self.transcription_provider == "faster_whisper"
+            else "whisper"
+        )
+        if self.transcription_provider == "youtube_captions":
+            return True
+        return _module_available(module)
 
     @staticmethod
     def _normalize_transcription_language(value: str | None) -> str:
@@ -427,8 +616,14 @@ class Config:
     def _infer_default_llm(self) -> str:
         """
         Infer a usable default model based on whichever API key is present.
-        Falls back to Google for backward compatibility.
+
+        Agnes AI comes first because its key is a free-tier key; legacy
+        deployments without one keep the previous Google default.
         """
+        if self.agnes_api_key:
+            return f"agnes:{self.agnes_model}"
+        if self.ollama_model and self.ai_provider_mode == "local":
+            return f"ollama:{self.ollama_model}"
         if self.google_api_key:
             return "google-gla:gemini-3-flash-preview"
         if self.openai_api_key:
@@ -438,6 +633,14 @@ class Config:
         if self.openrouter_api_key:
             return "openrouter:anthropic/claude-sonnet-5.5"
         return "google-gla:gemini-3-flash-preview"
+
+
+def _module_available(module_name: str) -> bool:
+    """Cheap check without importing heavy optional dependencies."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):  # pragma: no cover - broken installs
+        return False
 
 
 def get_config() -> Config:

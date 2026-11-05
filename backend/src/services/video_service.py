@@ -562,9 +562,13 @@ class VideoService:
         (assemblyai, whisper, or youtube_captions).
         Runs in thread pool to avoid blocking.
         """
-        logger.info(f"Generating transcript for: {video_path}")
-        speech_model = "best"
         runtime_config = get_config()
+        logger.info(
+            "Generating transcript for: %s (provider: %s)",
+            video_path,
+            runtime_config.transcription_provider,
+        )
+        speech_model = "best"
         # The fast-mode model selector is only meaningful for AssemblyAI; the
         # other providers ignore it and would otherwise silently change behaviour.
         if processing_mode == "fast" and runtime_config.transcription_provider == "assemblyai":
@@ -1077,7 +1081,15 @@ class VideoService:
                 raise Exception("Task cancelled")
 
             if progress_callback:
-                await progress_callback(30, "Generating transcript...", "processing")
+                await progress_callback(
+                    30,
+                    (
+                        "Transcribing locally with Faster-Whisper..."
+                        if runtime_config.transcription_provider == "faster_whisper"
+                        else "Generating transcript..."
+                    ),
+                    "processing",
+                )
 
             transcript = checkpoint.get("transcript") or cached_transcript
             transcript_data = checkpoint.get("transcript_data")
@@ -1129,7 +1141,9 @@ class VideoService:
 
             if progress_callback:
                 await progress_callback(
-                    50, "Analyzing content with AI...", "processing"
+                    50,
+                    f"Analyzing content with {runtime_config.ai_provider_label()}...",
+                    "processing",
                 )
 
             relevant_parts = None
