@@ -25,6 +25,9 @@ If you are new to the project, start here:
   - YouTube auth rotation settings
   - Twitch and Kick import providers
   - Feedback and email configuration
+- [Cost Optimization](./cost-optimization.md)
+  - Local-first and hybrid AI configurations
+  - Transcription, model-routing, caching, and download cost controls
 - [App Guide](./app-guide.md)
   - Main screens and routes
   - Core user workflows
