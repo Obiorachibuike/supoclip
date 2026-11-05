@@ -70,7 +70,9 @@
     "socialTitle": "Social-Konten",
     "socialDescription": "Verbinde YouTube, TikTok und Instagram, um Clips zu veröffentlichen und die Performance zu sehen",
     "creatorTitle": "Creator-Programm",
-    "creatorDescription": "Mach Videos über SupoClip, bekomm Pro kostenlos und einen Code für dein Publikum"
+    "creatorDescription": "Mach Videos über SupoClip, bekomm Pro kostenlos und einen Code für dein Publikum",
+    "aiTitle": "KI-Anbieter",
+    "aiDescription": "Sieh, welche Modelle deine Videos verarbeiten und ob sie Geld kosten"
   },
   "save": {
     "saved": "Einstellungen gespeichert!",

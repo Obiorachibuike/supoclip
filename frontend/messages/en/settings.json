@@ -70,7 +70,9 @@
     "socialTitle": "Social accounts",
     "socialDescription": "Connect YouTube, TikTok and Instagram to publish clips and track performance",
     "creatorTitle": "Creator program",
-    "creatorDescription": "Make videos about SupoClip, get Pro free and a code for your audience"
+    "creatorDescription": "Make videos about SupoClip, get Pro free and a code for your audience",
+    "aiTitle": "AI providers",
+    "aiDescription": "See which models process your videos and whether they cost money"
   },
   "save": {
     "saved": "Preferences saved successfully!",
