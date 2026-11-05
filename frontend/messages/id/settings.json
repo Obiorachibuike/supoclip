@@ -70,7 +70,9 @@
     "socialTitle": "Akun sosial",
     "socialDescription": "Hubungkan YouTube, TikTok, dan Instagram untuk memublikasikan clip dan melacak performa",
     "creatorTitle": "Program kreator",
-    "creatorDescription": "Buat video tentang SupoClip, dapatkan Pro gratis dan kode untuk audiensmu"
+    "creatorDescription": "Buat video tentang SupoClip, dapatkan Pro gratis dan kode untuk audiensmu",
+    "aiTitle": "Penyedia AI",
+    "aiDescription": "Lihat model mana yang memproses video Anda dan apakah berbiaya"
   },
   "save": {
     "saved": "Preferensi berhasil disimpan!",

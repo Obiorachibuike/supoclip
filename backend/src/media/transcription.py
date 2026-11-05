@@ -6,6 +6,7 @@ from typing import List
 from typing import Optional
 from pathlib import Path
 import assemblyai as aai
+from ..ai_providers import get_provider_policy
 from ..config import get_config
 import httpx
 import json
@@ -28,6 +29,12 @@ from .common import (
 from .ffmpeg import (
     run_ffmpeg_command,
     select_audio_stream_index,
+)
+from .faster_whisper_engine import (
+    FasterWhisperTranscriptionError,
+    FasterWhisperUnavailable,
+    is_available as faster_whisper_available,
+    transcribe_audio as faster_whisper_transcribe,
 )
 
 
@@ -316,6 +323,76 @@ def transcribe_with_youtube_captions(video_url: str) -> Optional[str]:
                     pass
 
 
+class TranscriptionError(RuntimeError):
+    """Transcription failed. The message tells the user what to change.
+
+    Local engines never fall back to a paid provider automatically, so the
+    message states that explicitly when a free engine fails.
+    """
+
+
+def _get_transcript_with_faster_whisper(video_path: Path, runtime_config) -> str:
+    """Get a transcript from the local Faster-Whisper engine (free tier default)."""
+    if not faster_whisper_available():
+        raise TranscriptionError(
+            "Faster-Whisper is the selected transcription engine but it is not "
+            "installed in this deployment. Install the backend dependencies "
+            "(uv sync) to enable free local transcription. SupoClip did not fall "
+            "back to a paid provider; set TRANSCRIPTION_PROVIDER=assemblyai with "
+            "ASSEMBLY_AI_API_KEY if you explicitly want premium transcription."
+        )
+
+    model_size = getattr(runtime_config, "faster_whisper_model", "medium")
+    logger.info(
+        "Starting Faster-Whisper transcription (model: %s, device: %s)",
+        model_size,
+        getattr(runtime_config, "faster_whisper_device", "auto"),
+    )
+    audio_path = _prepare_audio_for_transcription(video_path)
+    try:
+        result = faster_whisper_transcribe(
+            audio_path,
+            model_size=model_size,
+            device=getattr(runtime_config, "faster_whisper_device", "auto"),
+            compute_type=getattr(runtime_config, "faster_whisper_compute_type", "auto"),
+            language=runtime_config.transcription_language or None,
+            beam_size=getattr(runtime_config, "faster_whisper_beam_size", 5),
+            vad_filter=getattr(runtime_config, "faster_whisper_vad_filter", True),
+            download_root=getattr(runtime_config, "faster_whisper_download_root", None),
+            cpu_threads=getattr(runtime_config, "faster_whisper_cpu_threads", 0),
+        )
+    except FasterWhisperUnavailable as error:
+        raise TranscriptionError(
+            f"Local transcription could not start: {error} SupoClip did not switch "
+            "to a paid provider."
+        ) from error
+    except FasterWhisperTranscriptionError as error:
+        raise TranscriptionError(
+            f"Local Faster-Whisper transcription failed: {error} No paid provider "
+            "was used. Check the source audio, free disk space, and the "
+            "FASTER_WHISPER_* settings, or explicitly select "
+            "TRANSCRIPTION_PROVIDER=assemblyai (paid)."
+        ) from error
+
+    formatted_lines = format_transcript_for_analysis(result)
+    if not formatted_lines:
+        raise TranscriptionError(
+            "Faster-Whisper produced no usable transcript lines for this source. "
+            "No paid provider was used."
+        )
+    if getattr(runtime_config, "transcription_cache_enabled", True):
+        cache_transcript_data(video_path, result)
+
+    transcript = "\n".join(formatted_lines)
+    logger.info(
+        "Faster-Whisper transcript formatted: %d segments, %d chars (language: %s)",
+        len(formatted_lines),
+        len(transcript),
+        result.get("language") or "unknown",
+    )
+    return transcript
+
+
 def get_video_transcript(
     video_path: Path,
     speech_model: str = "universal",
@@ -323,14 +400,17 @@ def get_video_transcript(
 ) -> str:
     """Get a video transcript using the configured provider.
 
-    Dispatches to AssemblyAI, local Whisper, or YouTube captions based on
-    ``TRANSCRIPTION_PROVIDER``. ``source_url`` enables the youtube_captions
-    provider, which needs the original URL rather than a local file path.
+    Dispatches to Faster-Whisper, local Whisper, YouTube captions or AssemblyAI
+    based on ``TRANSCRIPTION_PROVIDER``. ``source_url`` enables the
+    youtube_captions provider, which needs the original URL rather than a local
+    file path.
     """
     logger.info(f"Getting transcript for: {video_path}")
     runtime_config = get_config()
     provider = runtime_config.transcription_provider
 
+    if provider == "faster_whisper":
+        return _get_transcript_with_faster_whisper(video_path, runtime_config)
     if provider == "whisper":
         return _get_transcript_with_whisper(video_path, runtime_config)
     if provider == "youtube_captions":
@@ -347,6 +427,10 @@ def _get_transcript_with_assemblyai(
     video_path: Path, speech_model: str, runtime_config
 ) -> str:
     """Get transcript using AssemblyAI with word-level timing for precise subtitles."""
+    # AssemblyAI is a paid provider: refuse unless the deployment opted in.
+    get_provider_policy(runtime_config).assert_paid_authorization(
+        "assemblyai", purpose="Transcription"
+    )
     # A job owns its client: concurrent jobs must not mutate shared SDK settings.
     client = aai.Client(settings=aai.Settings(
         api_key=runtime_config.assembly_ai_api_key,
@@ -628,7 +712,9 @@ def format_transcript_for_analysis(transcript) -> List[str]:
     # second-based timings to milliseconds to match the timestamp formatter.
     if isinstance(transcript, dict):
         formatted_lines = []
-        for segment in transcript.get("segments") or []:
+        # Faster-Whisper supplies sentence-sized `analysis_segments` alongside
+        # the engine's own segments; prefer those for prompt line boundaries.
+        for segment in transcript.get("analysis_segments") or transcript.get("segments") or []:
             start_ms = int(segment.get("start", 0) * 1000)
             end_ms = int(segment.get("end", 0) * 1000)
             formatted_lines.append(

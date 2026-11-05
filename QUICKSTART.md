@@ -32,14 +32,15 @@ That's it! The script will:
 Edit the `.env` file in the project root and add your API keys:
 
 ```bash
-# Required for video transcription
-ASSEMBLY_AI_API_KEY=your_assemblyai_key_here
+# The free tier: Agnes AI for clip analysis + faster-whisper locally.
+AI_PROVIDER_MODE=free
+AGNES_API_KEY=your_free_agnes_key_here
 
-# Choose one AI provider for clip selection
-OPENAI_API_KEY=your_openai_key_here
+# Free mode resolves LLM to agnes:AGNES_MODEL, so this is only a reminder.
+LLM=agnes:agnes-2.5-flash
 
-# Configure which AI model to use
-LLM=openai:gpt-4
+# Optional premium upgrade: set AI_PROVIDER_MODE=premium first, then
+# OPENAI_API_KEY=your_openai_key_here
 
 # OR use Ollama locally
 # LLM=ollama:gpt-oss:20b
@@ -93,7 +94,8 @@ docker-compose up -d --build
 
 | Variable | Description | Where to Get |
 |----------|-------------|--------------|
-| `ASSEMBLY_AI_API_KEY` | Speech-to-text transcription | https://www.assemblyai.com/ |
+| `AGNES_API_KEY` | Free AI clip analysis (default free tier) | https://platform.agnes-ai.com/ |
+| `ASSEMBLY_AI_API_KEY` | Optional paid speech-to-text (Faster-Whisper is the free default) | https://www.assemblyai.com/ |
 | `LLM` | AI model identifier | e.g., `openai:gpt-5.2` or `ollama:gpt-oss:20b` |
 
 ### Optional Variables

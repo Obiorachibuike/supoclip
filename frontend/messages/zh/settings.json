@@ -70,7 +70,9 @@
     "socialTitle": "社交账号",
     "socialDescription": "连接 YouTube、TikTok 和 Instagram，发布短片并查看表现",
     "creatorTitle": "创作者计划",
-    "creatorDescription": "制作关于 SupoClip 的视频，免费获得 Pro，并给你的观众一个代码"
+    "creatorDescription": "制作关于 SupoClip 的视频，免费获得 Pro，并给你的观众一个代码",
+    "aiTitle": "AI 服务商",
+    "aiDescription": "查看处理你视频的模型以及是否产生费用"
   },
   "save": {
     "saved": "偏好已保存！",

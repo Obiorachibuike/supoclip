@@ -48,17 +48,53 @@ In most cases, edit `.env` and then rebuild or restart the stack.
 
 ## Required Settings
 
+The free tier needs one key. See [AI providers and processing modes](./ai-providers.md)
+for the full picture.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `AGNES_API_KEY` | Yes, for free mode | Free reasoning key from <https://platform.agnes-ai.com>. Without it (and without `OLLAMA_MODEL`) AI clip selection stops with a configuration error |
+
+Everything else in this section is optional and only needed for premium or
+local deployments.
+
+### Processing mode
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AI_PROVIDER_MODE` | blank = `free` for new installs, existing provider for upgrades | `free`, `premium`, `local` or `custom` |
+| `AI_ALLOW_PAID_PROVIDERS` | `false` | Allow paid providers while staying in free/local mode |
+| `AI_FREE_FALLBACK_ENABLED` | `true` | Retry with `OLLAMA_MODEL` when Agnes is out of quota |
+| `AGNES_MODEL` | `agnes-2.5-flash` | Agnes text model id |
+| `AGNES_BASE_URL` | `https://apihub.agnes-ai.com/v1` | Override only for an Agnes-compatible gateway |
+| `AGNES_TIMEOUT_SECONDS` | `600` | Budget for one Agnes call |
+| `OLLAMA_MODEL` | unset | Local model used by local mode and as the free fallback |
+
 ### Transcription
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `ASSEMBLY_AI_API_KEY` | Yes | Enables word-level transcription used for clip extraction and subtitles |
+| `TRANSCRIPTION_PROVIDER` | No | `faster_whisper` (free default), `whisper`, `youtube_captions` or `assemblyai` (paid) |
+| `WHISPER_MODEL_SIZE` | No | Local model size for both local engines; default `medium` |
+| `FASTER_WHISPER_MODEL` | No | Overrides `WHISPER_MODEL_SIZE` for Faster-Whisper |
+| `FASTER_WHISPER_DEVICE` | No | `auto` (default), `cpu` or `cuda`; falls back to CPU |
+| `FASTER_WHISPER_COMPUTE_TYPE` | No | `auto` (int8 on CPU, float16 on CUDA) or an explicit CTranslate2 type |
+| `FASTER_WHISPER_DOWNLOAD_ROOT` | No | Where model weights are stored |
+| `FASTER_WHISPER_BEAM_SIZE` | No | Decoding beam size, default `5` |
+| `FASTER_WHISPER_VAD_FILTER` | No | Silence filter, default `true` |
+| `FASTER_WHISPER_CPU_THREADS` | No | `0` lets CTranslate2 decide |
+| `TRANSCRIPTION_CACHE_ENABLED` | No | Reuse transcript word timings and audio analysis, default `true` |
+| `ASSEMBLY_AI_API_KEY` | Only for `assemblyai` | Paid, opt-in transcription |
+
+Free and local modes ignore `TRANSCRIPTION_PROVIDER=assemblyai` unless
+`AI_ALLOW_PAID_PROVIDERS=true`. A local transcription failure is reported with
+an explanation; SupoClip never switches to the paid engine on its own.
 
 ### LLM selection
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `LLM` | Yes | Selects the provider and model, for example `google-gla:gemini-3-flash-preview` |
+| `LLM` | No | Provider and model. In free mode it is ignored in favour of Agnes; in local mode it must name an `ollama:` model |
 | `OPENAI_API_KEY` | If using OpenAI | Required for `openai:*` models |
 | `GOOGLE_API_KEY` | If using Google | Required for `google-gla:*` models |
 | `ANTHROPIC_API_KEY` | If using Anthropic | Required for `anthropic:*` models |
@@ -66,7 +102,8 @@ In most cases, edit `.env` and then rebuild or restart the stack.
 | `OLLAMA_BASE_URL` | If using Ollama remotely | Base URL for Ollama-compatible endpoints |
 | `OLLAMA_API_KEY` | Optional | Used for hosted Ollama providers such as Ollama Cloud |
 
-The backend can infer a default LLM from whichever API key is present, but setting `LLM` explicitly is safer and easier to debug.
+The backend infers a default model from whichever key is present (Agnes first).
+In premium/custom mode, setting `LLM` explicitly is safer and easier to debug.
 
 ## Core Application Settings
 

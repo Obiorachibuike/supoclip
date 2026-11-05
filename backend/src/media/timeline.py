@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Tuple
 from ..clip_cleanup import clip_cleanup_enabled
 from ..clip_source_map import normalize_source_ranges
+import json
 import re
 from .common import (
     CLIP_CAP_SENTENCE_BACKOFF_FRACTION,
@@ -747,8 +748,76 @@ def parse_transcript_lines(transcript: str) -> List[Dict[str, Any]]:
     return lines
 
 
+AUDIO_PEAK_CACHE_VERSION = 1
+
+
+def _audio_peak_cache_path(video_path: Path) -> Path:
+    return video_path.with_suffix(".audio_peaks.json")
+
+
+def _load_audio_peak_cache(video_path: Path, max_peaks: int) -> Optional[List[float]]:
+    """Reuse the RMS peak analysis for an unchanged source file.
+
+    The scan decodes the whole audio track, so repeating it for the same upload
+    (retries, a second clip preset, a resumed task) is pure waste. The cache is
+    keyed by file identity and invalidated whenever the file or the peak count
+    changes.
+    """
+    if not getattr(get_config(), "transcription_cache_enabled", True):
+        return None
+    path = _audio_peak_cache_path(video_path)
+    try:
+        stat = video_path.stat()
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        payload.get("version") != AUDIO_PEAK_CACHE_VERSION
+        or payload.get("max_peaks") != max_peaks
+        or payload.get("size") != stat.st_size
+        or payload.get("mtime") != int(stat.st_mtime)
+    ):
+        return None
+    peaks = payload.get("peaks")
+    if not isinstance(peaks, list):
+        return None
+    return [float(peak) for peak in peaks]
+
+
+def _store_audio_peak_cache(
+    video_path: Path, max_peaks: int, peaks: List[float]
+) -> None:
+    if not getattr(get_config(), "transcription_cache_enabled", True):
+        return
+    try:
+        stat = video_path.stat()
+        _audio_peak_cache_path(video_path).write_text(
+            json.dumps(
+                {
+                    "version": AUDIO_PEAK_CACHE_VERSION,
+                    "max_peaks": max_peaks,
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                    "peaks": peaks,
+                }
+            )
+        )
+    except OSError:  # pragma: no cover - cache is best effort
+        logger.debug("Could not write audio peak cache for %s", video_path)
+
+
 def detect_audio_peak_times(video_path: Path, max_peaks: int = 8) -> List[float]:
     """Find approximate one-second audio energy peaks with ffmpeg astats."""
+    cached = _load_audio_peak_cache(video_path, max_peaks)
+    if cached is not None:
+        return cached
+    peaks = _compute_audio_peak_times(video_path, max_peaks)
+    if peaks:
+        _store_audio_peak_cache(video_path, max_peaks, peaks)
+    return peaks
+
+
+def _compute_audio_peak_times(video_path: Path, max_peaks: int) -> List[float]:
     audio_stream = select_audio_stream_index(video_path)
     if audio_stream is None:
         return []

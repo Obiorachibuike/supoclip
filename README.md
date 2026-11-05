@@ -57,10 +57,10 @@ SupoClip gives you the same core pipeline without the leash:
 
 - **YouTube, Twitch, Kick & uploads** — paste a YouTube video, a Twitch VOD or clip, or a Kick VOD or clip, or upload your own file (live streams are not supported). Twitch and Kick download providers and the optional Apify fallbacks are set in [docs/configuration.md](docs/configuration.md#twitch-and-kick-imports)
 
-- **AI clip selection** — an LLM (Gemini, GPT, Claude, or a local Ollama model) picks the 3–7 most clip-worthy segments from the transcript
+- **AI clip selection, free by default** — Agnes AI (free tier) picks the most clip-worthy segments from the transcript; Gemini, GPT, Claude, OpenRouter or a local Ollama model are optional upgrades
 - **Virality scoring** — every clip gets hook, engagement, value, and shareability scores
 - **Smart vertical cropping** — face detection keeps the speaker centered in the 9:16 frame
-- **Word-synced subtitles** — AssemblyAI word-level timestamps, custom fonts, caption templates with animation styles
+- **Word-synced subtitles** — Faster-Whisper word-level timestamps by default (AssemblyAI optional), custom fonts, caption templates with animation styles
 - **Hook titles** — an AI-written headline burned into the top of each clip's opening seconds
 - **B-roll & transitions** — optional Pexels stock footage overlays and transition effects
 - **Built-in editor** — trim, split, and merge clips, then export with platform presets (TikTok, Reels, Shorts)
@@ -70,20 +70,26 @@ SupoClip gives you the same core pipeline without the leash:
 
 ## Quick Start
 
-You need Docker, an [AssemblyAI](https://www.assemblyai.com/) API key for transcription, and one LLM provider key (Google, OpenAI, Anthropic, or a local Ollama).
+You need Docker and one **free** [Agnes AI](https://platform.agnes-ai.com) API key.
+Transcription, cropping, subtitles and rendering run locally — no OpenAI, Gemini,
+Claude or AssemblyAI key required.
 
 ```bash
 git clone https://github.com/FujiwaraChoki/supoclip.git
 cd supoclip
 ```
 
-Create a `.env` in the root with your keys:
+Create a `.env` in the root with your free key:
 
 ```env
-ASSEMBLY_AI_API_KEY=your_assemblyai_api_key
-LLM=google-gla:gemini-3-flash-preview
-GOOGLE_API_KEY=your_google_api_key
+AI_PROVIDER_MODE=free
+AGNES_API_KEY=your_agnes_api_key
 ```
+
+That is the whole free tier: Agnes AI analyses the transcript, Faster-Whisper
+transcribes locally, FFmpeg and OpenCV cut and frame the clips. Premium providers
+(OpenAI, Gemini, Claude, OpenRouter, AssemblyAI) and a fully offline Ollama setup
+are documented in [AI providers and processing modes](docs/ai-providers.md).
 
 Then start everything:
 
@@ -95,7 +101,12 @@ First startup takes a few minutes; watch it with `docker-compose logs -f`. Once 
 
 The template sets `FRONTEND_PORT=3107`. Existing deployments without this setting keep port `3001`; preserve that port if your production reverse proxy uses it. See the [setup guide](docs/setup.md) for custom ports and public URLs.
 
-To run fully local with Whisper and Ollama (including the Docker networking Ollama needs), see the [self-hosting tutorial](https://www.supoclip.com/blog/self-host-supoclip-docker#local). To use a different LLM provider or configure the optional pieces (B-roll, analytics, emails, YouTube metadata), see the [configuration guide](docs/configuration.md). If something misbehaves, the [troubleshooting guide](docs/troubleshooting.md) covers the common failure modes.
+To run fully local with Ollama and no external AI calls at all
+(`AI_PROVIDER_MODE=local`), or to configure a premium provider, see
+[AI providers and processing modes](docs/ai-providers.md). Optional pieces
+(B-roll, analytics, emails, YouTube metadata) are in the
+[configuration guide](docs/configuration.md). If something misbehaves, the
+[troubleshooting guide](docs/troubleshooting.md) covers the common failure modes.
 
 ## Documentation
 
@@ -104,6 +115,7 @@ Everything beyond this page lives in [`docs/`](docs/README.md):
 | Guide | What it covers |
 |---|---|
 | [Setup](docs/setup.md) | Docker-first install, local development, first-run checklist |
+| [AI Providers](docs/ai-providers.md) | Free, premium, local and custom modes; paid-provider protection |
 | [Configuration](docs/configuration.md) | Every environment variable, operating modes, provider options |
 | [App Guide](docs/app-guide.md) | Screens, workflows, admin features, hosted vs self-host |
 | [Architecture](docs/architecture.md) | How the frontend, API, worker, queue, and pipeline fit together |
