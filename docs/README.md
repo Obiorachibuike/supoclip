@@ -17,6 +17,10 @@ If you are new to the project, start here:
   - Local development commands
   - First-run checklist
   - Production-minded setup notes
+- [AI Providers and Processing Modes](./ai-providers.md)
+  - Free tier with Agnes AI and Faster-Whisper
+  - Premium, local and custom modes
+  - Paid-provider protection, usage reporting and caching
 - [Configuration](./configuration.md)
   - Required API keys
   - DataFast analytics settings
