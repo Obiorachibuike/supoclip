@@ -35,6 +35,8 @@ Most settings are sourced from `.env.example`, `docker-compose.yml`, and the bac
 
 ## Configuration Strategy
 
+For a practical low-cost or local-first setup, see the [Cost Optimization Guide](./cost-optimization.md).
+
 There are three main layers:
 
 - Root `.env`
@@ -52,7 +54,7 @@ In most cases, edit `.env` and then rebuild or restart the stack.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `ASSEMBLY_AI_API_KEY` | Yes | Enables word-level transcription used for clip extraction and subtitles |
+| `ASSEMBLY_AI_API_KEY` | Only when using AssemblyAI | Enables cloud word-level transcription; local Whisper does not require this key |
 
 ### LLM selection
 
@@ -132,7 +134,7 @@ These settings affect clip generation speed, throughput, and defaults.
 |---|---|---|
 | `DEFAULT_PROCESSING_MODE` | `fast` | Default mode for new tasks |
 | `FAST_MODE_MAX_CLIPS` | `10` | Clip cap used by fast mode (never above `MAX_CLIPS`) |
-| `FAST_MODE_TRANSCRIPT_MODEL` | `universal-3-5-pro` | Fast mode uses the Pro model too; `universal-2` covers languages Pro doesn't. `nano`/`universal-2` select the cheaper model for self-hosting |
+| `FAST_MODE_TRANSCRIPT_MODEL` | `universal-2` | Fast mode defaults to the lower-cost model while retaining word timings and speaker labels; set `universal-3-5-pro` explicitly for the higher-end option |
 | `ASSEMBLY_AI_SPEECH_MODEL` | Empty | Overrides the AssemblyAI model for every processing mode. Set `universal-2` to use only the non-Pro model while retaining word timings and speaker labels; takes precedence over `FAST_MODE_TRANSCRIPT_MODEL` |
 | `ASSEMBLY_AI_REQUEST_TIMEOUT_SECONDS` | `60` | Per-request upload/submit timeout (5–300). Transient upload failures retry up to 3 times; the paid submission is attempted once |
 | `WHISPER_MODEL_SIZE` | `medium` in `.env.example` | Whisper model size when Whisper is used locally |
