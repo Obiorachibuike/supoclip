@@ -266,7 +266,7 @@ class Config:
         self.default_processing_mode = os.getenv("DEFAULT_PROCESSING_MODE", "fast")
         self.fast_mode_max_clips = int(os.getenv("FAST_MODE_MAX_CLIPS", "10"))
         self.fast_mode_transcript_model = os.getenv(
-            "FAST_MODE_TRANSCRIPT_MODEL", "universal-3-5-pro"
+            "FAST_MODE_TRANSCRIPT_MODEL", "universal-2"
         )
         # Replay a later punchline before the clip. Off: the same line was
         # playing twice (teaser, then again inside the clip) and the opening

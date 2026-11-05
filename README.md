@@ -105,6 +105,7 @@ Everything beyond this page lives in [`docs/`](docs/README.md):
 |---|---|
 | [Setup](docs/setup.md) | Docker-first install, local development, first-run checklist |
 | [Configuration](docs/configuration.md) | Every environment variable, operating modes, provider options |
+| [Cost Optimization](docs/cost-optimization.md) | Local-first AI, cheaper transcription, caching, and API cost controls |
 | [App Guide](docs/app-guide.md) | Screens, workflows, admin features, hosted vs self-host |
 | [Architecture](docs/architecture.md) | How the frontend, API, worker, queue, and pipeline fit together |
 | [API Reference](docs/api-reference.md) | Backend endpoints, API keys, admin and billing routes |
