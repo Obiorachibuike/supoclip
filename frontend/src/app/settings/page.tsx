@@ -34,7 +34,7 @@ import { CreatorCodeField } from "@/components/billing/creator-code-field";
 import { toast } from "sonner";
 import { track } from "@/lib/datafast";
 import Link from "next/link";
-import { AlertCircle, Bot, Check, ChevronRight, Clock, CreditCard, Languages, Loader2, Mail, Megaphone, Share2, Type } from "lucide-react";
+import { AlertCircle, Bot, Check, ChevronRight, Clock, CreditCard, Languages, Loader2, Mail, Megaphone, Share2, Sparkles, Type } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FontSelectOption, type FontOption } from "@/components/font-select-option";
 
@@ -559,6 +559,15 @@ export default function SettingsPage() {
             </div>
           </Section>
         )}
+
+        <Link href="/settings/ai" className="group flex items-center gap-4 rounded-2xl border bg-background p-5 transition-colors hover:border-foreground/25">
+          <span className="flex size-9 items-center justify-center rounded-lg bg-muted"><Sparkles className="size-4" /></span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold">{t("links.aiTitle")}</span>
+            <span className="block text-xs text-muted-foreground">{t("links.aiDescription")}</span>
+          </span>
+          <ChevronRight className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+        </Link>
 
         <Link href="/settings/api-keys" className="group flex items-center gap-4 rounded-2xl border bg-background p-5 transition-colors hover:border-foreground/25">
           <span className="flex size-9 items-center justify-center rounded-lg bg-muted"><Bot className="size-4" /></span>

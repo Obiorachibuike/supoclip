@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 RUNTIME_SETTING_KEYS: tuple[str, ...] = (
     "ASSEMBLY_AI_API_KEY",
+    "AGNES_API_KEY",
+    "AGNES_MODEL",
+    "AI_PROVIDER_MODE",
+    "TRANSCRIPTION_PROVIDER",
+    "OLLAMA_MODEL",
     "LLM",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -28,6 +33,11 @@ RUNTIME_SETTING_KEYS: tuple[str, ...] = (
 
 PROCESS_ENV_SETTING_KEYS = frozenset(
     {
+        "AGNES_API_KEY",
+        "AGNES_MODEL",
+        "AI_PROVIDER_MODE",
+        "TRANSCRIPTION_PROVIDER",
+        "OLLAMA_MODEL",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "GOOGLE_API_KEY",

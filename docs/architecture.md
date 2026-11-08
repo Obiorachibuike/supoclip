@@ -162,6 +162,26 @@ Important services:
 - `billing_service.py`
 - `subscription_email_service.py`
 
+### AI provider layer
+
+- `src/ai_providers.py` — provider catalogue, processing modes (`free`,
+  `premium`, `local`, `custom`) and the paid-provider policy. It is the one place
+  that decides whether a provider may run.
+- `src/agnes_ai.py` — the only Agnes AI integration: model factory for the
+  pydantic-ai agents, a chat-completions client for short text tasks, documented
+  error mapping and usage accounting.
+- `src/ai_usage.py` — per-process request/token counters reported by providers.
+- `src/ai.py` — transcript analysis agents (windowed selection, rerank, B-roll),
+  retry budget and the free-fallback path used when a provider runs out of quota.
+- `src/media/faster_whisper_engine.py` — local CTranslate2 Whisper with
+  word-level timestamps, device detection and a CPU fallback.
+- `src/media/transcription.py` — provider dispatch (faster_whisper, whisper,
+  youtube_captions, assemblyai) and the transcript/word-timing cache.
+
+A task therefore runs with one reasoning provider and one transcription
+provider, both chosen by `AI_PROVIDER_MODE`; settings are read-only from the
+browser (`GET /ai/providers`) and never expose keys.
+
 ### Repositories
 
 Directory:

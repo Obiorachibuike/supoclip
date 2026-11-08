@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...admin_auth import require_admin_user
 from ...ai import _get_missing_llm_key_error
+from ...ai_providers import normalize_ai_mode, normalize_transcription_provider
 from ...config import get_config
 from ...database import get_db
 from ...runtime_settings import (
@@ -22,6 +23,40 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 SETTING_METADATA = {
+    "AGNES_API_KEY": {
+        "label": "Agnes AI API key",
+        "description": (
+            "Free-tier reasoning provider used by default. Create a key at "
+            "platform.agnes-ai.com."
+        ),
+        "input_type": "password",
+    },
+    "AGNES_MODEL": {
+        "label": "Agnes AI model",
+        "description": "Agnes model id, for example agnes-2.5-flash.",
+        "input_type": "text",
+    },
+    "AI_PROVIDER_MODE": {
+        "label": "AI provider mode",
+        "description": "free, premium, local or custom.",
+        "input_type": "text",
+    },
+    "TRANSCRIPTION_PROVIDER": {
+        "label": "Transcription provider",
+        "description": (
+            "faster_whisper (free local), whisper, youtube_captions or "
+            "assemblyai (paid)."
+        ),
+        "input_type": "text",
+    },
+    "OLLAMA_MODEL": {
+        "label": "Ollama model",
+        "description": (
+            "Optional local model id used by local mode and as the free fallback "
+            "when Agnes is out of quota."
+        ),
+        "input_type": "text",
+    },
     "ASSEMBLY_AI_API_KEY": {
         "label": "AssemblyAI API key",
         "description": "Used for video transcription.",
@@ -159,6 +194,23 @@ async def update_runtime_settings(
             status_code=400,
             detail=f"Unsupported setting key(s): {', '.join(sorted(set(invalid_keys)))}",
         )
+
+    if "AI_PROVIDER_MODE" in payload.updates:
+        try:
+            normalize_ai_mode(payload.updates["AI_PROVIDER_MODE"])
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if "TRANSCRIPTION_PROVIDER" in payload.updates:
+        value = payload.updates["TRANSCRIPTION_PROVIDER"].strip()
+        if value and normalize_transcription_provider(value) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "TRANSCRIPTION_PROVIDER must be faster_whisper, whisper, "
+                    "youtube_captions or assemblyai."
+                ),
+            )
 
     if "LLM" in payload.updates:
         config_error = _get_missing_llm_key_error(

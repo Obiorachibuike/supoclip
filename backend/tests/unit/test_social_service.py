@@ -352,7 +352,9 @@ async def test_generate_caption_does_not_create_a_post(service, monkeypatch):
     from unittest.mock import AsyncMock
     from src.services import social_caption_service
 
+    # Anthropic is a paid provider: selecting premium mode is the opt-in.
     service.config.anthropic_api_key = "test-key"
+    service.config.ai_provider_mode = "premium"
     generate = AsyncMock(return_value="A post caption")
     monkeypatch.setattr(social_caption_service, "generate_social_caption", generate)
     result = await service.generate_caption("user-1", task_id="task-1", clip_id="clip-1", provider="youtube")
@@ -368,6 +370,7 @@ async def test_generate_caption_failure_is_safe(service, monkeypatch):
     from src.services.social_service import SocialProviderUnavailable
 
     service.config.anthropic_api_key = "test-key"
+    service.config.ai_provider_mode = "premium"
     monkeypatch.setattr(social_caption_service, "generate_social_caption", AsyncMock(side_effect=RuntimeError("secret")))
     with pytest.raises(SocialProviderUnavailable, match="Couldn't generate") as error:
         await service.generate_caption("user-1", task_id="task-1", clip_id="clip-1", provider="youtube")
